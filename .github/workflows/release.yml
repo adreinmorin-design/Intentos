@@ -12,7 +12,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # required to read tags
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -20,18 +20,13 @@ jobs:
           python-version: "3.11"
 
       # ---------------------------------------------------------
-      # 1. Auto-generate requirements.txt if missing
+      # 1. Ensure requirements.txt exists (NO EOF USED)
       # ---------------------------------------------------------
       - name: Ensure requirements.txt
         run: |
           if [ ! -f requirements.txt ]; then
             echo "requirements.txt missing — generating default."
-            cat <<EOF > requirements.txt
-            fastapi
-            uvicorn[standard]
-            httpx
-            pytest
-            EOF
+            printf "fastapi\nuvicorn[standard]\nhttpx\npytest\n" > requirements.txt
           fi
 
       - name: Install dependencies
@@ -91,7 +86,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ---------------------------------------------------------
-      # 6. Upload production artifact to release
+      # 6. Upload production artifact
       # ---------------------------------------------------------
       - name: Upload production artifact
         uses: softprops/action-gh-release@v2
