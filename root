@@ -52,7 +52,35 @@ import subprocess
 from pathlib import Path
 from textwrap import dedent
 from typing import List, Optional
+import re
+from pathlib import Path
 
+def cleanup_similar_files(base_name: str, directory: Path = Path("root")):
+    """
+    Removes all .py files in the target directory that match the base name
+    and any suffix variants (e.g., backend_main.py, backend_main_old.py).
+    """
+    pattern = re.compile(rf"{re.escape(base_name)}(_.*)?\.py$")
+    for file in directory.glob("*.py"):
+        if pattern.match(file.name):
+            file.unlink()
+            print(f"🧹 Removed: {file.name}")
+
+def write_requirements_txt():
+    content = """fastapi
+uvicorn[standard]
+httpx
+jinja2
+python-multipart
+pydantic
+argparse
+pytest
+pathlib
+textwrap
+typing-extensions
+"""
+    Path("requirements.txt").write_text(content.strip())
+    print("✅ requirements.txt written")
 
 # -------------------------
 # Utility helpers
