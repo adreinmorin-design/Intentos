@@ -1,18 +1,40 @@
 #!/usr/bin/env python
 """
-Intentos Setup Wizard
+Intentos Setup Wizard (Owner-Guided Edition)
 
-One script to scaffold the entire Intentos project:
-- Backend (FastAPI) with:
+Scaffolds a full local-first Intentos stack:
+
+- Backend (FastAPI):
   - Consent persistence
-  - Chat engine using a 2,500-intent dataset
-  - Optional cloud-backed intent resolution via HTTP
-  - Plugin discovery and execution
-- Dashboard (FastAPI + HTML) talking to backend
+  - Chat engine:
+    - 2,500-intent dataset
+    - Token-overlap matching (EN + ES stopwords, confidence)
+    - Optional cloud-backed intent resolution with trace endpoint
+    - Sensitive word flagging
+  - Plugins:
+    - Discovery + execution
+    - Sample plugin
+  - Intents:
+    - CRUD
+    - Search (by name and text)
+    - Validate (test message vs intents)
+    - Quality scoring & simple conflict detection
+  - System health + owner actions logged to activity log
+
+- Dashboard (FastAPI + HTML):
+  - System Health & Guidance
+  - Plugins
+  - Chat Test
+  - Logs (with sensitive markers)
+  - Trace (local vs cloud)
+  - Intent Management (CRUD) with guidance and quality hints
+  - Sensitive Activity panel
+  - Owner Settings and explanations
+  - Activity Log of owner actions
+
 - CLI
-- VS Code extension scaffold
-- Electron wrapper scaffold
-- Plugin system with a sample plugin
+- VS Code extension scaffold (opens dashboard)
+- Electron wrapper (opens dashboard)
 - Dataset generation (2,500 intents)
 - Legal + config + env example
 - Git integration with structured commits (ON by default)
@@ -26,7 +48,6 @@ Usage:
 
 import argparse
 import json
-import os
 import subprocess
 from pathlib import Path
 from textwrap import dedent
@@ -121,7 +142,7 @@ def backend_main_py() -> str:
 
         app = FastAPI(
             title="Intentos Backend",
-            description="Core API for intents, chat, plugins, and dashboard integration.",
+            description="Core API for intents, chat, plugins, dashboard, and owner guidance.",
             version="0.1.0",
         )
 
@@ -163,6 +184,7 @@ def backend_consent_py() -> str:
         from fastapi import APIRouter
         from pathlib import Path
         import json
+        import datetime
 
         router = APIRouter(prefix="/consent", tags=["consent"])
 
@@ -170,10 +192,22 @@ def backend_consent_py() -> str:
         CONFIG_DIR = ROOT / "config"
         CONFIG_DIR.mkdir(exist_ok=True)
         CONSENT_FILE = CONFIG_DIR / "consent.json"
+        ACTIVITY_LOG = ROOT / "logs" / "activity.log"
 
 
         class ConsentPayload(BaseModel):
             allow: bool
+
+
+        def log_activity(kind: str, detail: str) -> None:
+            ACTIVITY_LOG.parent.mkdir(exist_ok=True)
+            entry = {
+                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "kind": kind,
+                "detail": detail,
+            }
+            with ACTIVITY_LOG.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\\n")
 
 
         def load_consent() -> dict:
@@ -197,9 +231,13 @@ def backend_consent_py() -> str:
 
         @router.post("/")
         async def set_consent(payload: ConsentPayload):
-            data = {"allow": payload.allow}
+            data = {
+                "allow": payload.allow,
+                "granted_at": datetime.datetime.utcnow().isoformat() + "Z",
+            }
             save_consent(data)
             status = "granted" if payload.allow else "denied"
+            log_activity("consent_update", f"Consent {status}")
             return {"status": f"consent {status}", "consent": payload.allow}
 
 
@@ -208,6 +246,7 @@ def backend_consent_py() -> str:
             data = load_consent()
             data["modal_closed"] = True
             save_consent(data)
+            log_activity("consent_modal_closed", "Consent modal closed by user")
             return {"status": "modal closed", "consent": data.get("allow", None)}
         """
     ).lstrip()
@@ -224,6 +263,8 @@ def backend_chat_py() -> str:
         import json
         import os
         import httpx
+        import re
+        import string
 
         router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -235,14 +276,50 @@ def backend_chat_py() -> str:
 
         CHAT_LOG = LOGS_DIR / "chat.log"
         INTENTS_FILE = DATA_DIR / "intents.json"
+        ACTIVITY_LOG = LOGS_DIR / "activity.log"
 
         CLOUD_URL = os.getenv("INTENTOS_CLOUD_URL")
         CLOUD_API_KEY = os.getenv("INTENTOS_CLOUD_API_KEY")
+
+        STOPWORDS = {
+            "the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "at",
+            "is", "it", "this", "that", "with", "as", "be", "are", "was", "were",
+            "by", "from", "you", "me", "my", "your", "our", "we", "they", "them",
+            "i", "yo", "tu", "el", "ella", "usted", "nosotros", "vosotros",
+            "ellos", "ellas", "un", "una", "unos", "unas", "y", "o", "para",
+            "de", "en", "con", "por", "sin", "es", "son", "soy", "eres", "era",
+            "fui", "fue", "su", "sus", "mi", "mis"
+        }
+
+        SENSITIVE_KEYWORDS = {
+            "suicide",
+            "kill myself",
+            "hurt myself",
+            "end my life",
+            "i want to die",
+            "i want to disappear",
+            "kill him",
+            "kill her",
+            "kill them",
+            "shoot them",
+            "hurt them",
+        }
 
 
         class ChatRequest(BaseModel):
             message: str
             user_id: Optional[str] = None
+
+
+        def log_activity(kind: str, detail: str) -> None:
+            ACTIVITY_LOG.parent.mkdir(exist_ok=True)
+            entry = {
+                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "kind": kind,
+                "detail": detail,
+            }
+            with ACTIVITY_LOG.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\\n")
 
 
         def load_intents() -> List[Dict[str, Any]]:
@@ -260,20 +337,65 @@ def backend_chat_py() -> str:
                 f.write(line + "\\n")
 
 
+        def tokenize(text: str) -> set:
+            text = text.lower()
+            text = re.sub(rf"[{re.escape(string.punctuation)}]", " ", text)
+            tokens = {t.strip() for t in text.split() if t.strip()}
+            return {t for t in tokens if t not in STOPWORDS}
+
+
+        def score_intent(message_tokens: set, intent: Dict[str, Any]) -> float:
+            example_tokens = set()
+            for ex in intent.get("examples", []):
+                example_tokens |= tokenize(ex)
+            if not example_tokens or not message_tokens:
+                return 0.0
+
+            overlap = message_tokens & example_tokens
+            if not overlap:
+                return 0.0
+
+            score = len(overlap) / len(message_tokens)
+            return score
+
+
         def match_intent_locally(message: str) -> Dict[str, Any]:
             intents = load_intents()
             if not intents:
                 return {
                     "name": "fallback",
                     "examples": [],
-                    "responses": ["I don’t have any intents configured yet."]
+                    "responses": ["I don’t have any intents configured yet."],
+                    "confidence": 0.0,
                 }
-            lower = message.lower()
+
+            msg_tokens = tokenize(message)
+            if not msg_tokens:
+                fallback = dict(intents[0])
+                fallback["confidence"] = 0.0
+                return fallback
+
+            best_intent: Optional[Dict[str, Any]] = None
+            best_score = 0.0
+
             for intent in intents:
-                for ex in intent.get("examples", []):
-                    if ex.lower() in lower:
-                        return intent
-            return intents[0]
+                score = score_intent(msg_tokens, intent)
+                if score > best_score:
+                    best_score = score
+                    best_intent = intent
+
+            threshold = 0.2
+            if best_intent and best_score >= threshold:
+                best_intent = dict(best_intent)
+                best_intent["confidence"] = round(best_score, 3)
+                return best_intent
+
+            return {
+                "name": "fallback",
+                "examples": [],
+                "responses": ["I’m not sure yet, but I’m learning."],
+                "confidence": 0.0,
+            }
 
 
         async def call_cloud_intent_engine(message: str) -> Optional[Dict[str, Any]]:
@@ -290,28 +412,50 @@ def backend_chat_py() -> str:
                         json={"message": message},
                     )
                 if resp.status_code != 200:
+                    log_activity("cloud_error", f"Cloud engine HTTP {resp.status_code}")
                     return None
                 data = resp.json()
                 return {
                     "name": data.get("intent", "cloud"),
                     "responses": data.get("responses", []),
+                    "confidence": data.get("confidence", 0.0),
                 }
-            except Exception:
+            except Exception as e:
+                log_activity("cloud_error", f"Cloud engine exception: {e}")
                 return None
+
+
+        def detect_sensitive_flags(message: str) -> dict:
+            lowered = message.lower()
+            matched = []
+            for kw in SENSITIVE_KEYWORDS:
+                if kw in lowered:
+                    matched.append(kw)
+            return {
+                "is_sensitive": bool(matched),
+                "matched_keywords": matched,
+            }
 
 
         @router.post("/send")
         async def send_chat(payload: ChatRequest):
             cloud_result = await call_cloud_intent_engine(payload.message)
+            engine_used = "local"
+
             if cloud_result and cloud_result.get("responses"):
                 responses = cloud_result["responses"]
                 reply = responses[0]
                 intent_name = cloud_result.get("name", "cloud")
+                confidence = cloud_result.get("confidence", 0.0)
+                engine_used = "cloud"
             else:
                 intent = match_intent_locally(payload.message)
                 responses = intent.get("responses", [])
                 reply = responses[0] if responses else "…"
                 intent_name = intent.get("name", "unknown")
+                confidence = intent.get("confidence", 0.0)
+
+            flags = detect_sensitive_flags(payload.message)
 
             entry = {
                 "ts": datetime.datetime.utcnow().isoformat() + "Z",
@@ -319,12 +463,21 @@ def backend_chat_py() -> str:
                 "message": payload.message,
                 "intent": intent_name,
                 "reply": reply,
+                "confidence": confidence,
+                "engine": engine_used,
+                "sensitive": flags,
             }
             append_chat_log(entry)
+
+            if flags["is_sensitive"]:
+                log_activity("sensitive_message", f"Sensitive message detected: {flags['matched_keywords']}")
 
             return {
                 "response": reply,
                 "intent": intent_name,
+                "confidence": confidence,
+                "engine": engine_used,
+                "sensitive": flags,
             }
 
 
@@ -340,6 +493,17 @@ def backend_chat_py() -> str:
                 except Exception:
                     continue
             return {"messages": records}
+
+
+        @router.get("/trace")
+        async def trace(message: str):
+            local_intent = match_intent_locally(message)
+            cloud_intent = await call_cloud_intent_engine(message)
+            return {
+                "message": message,
+                "local": local_intent,
+                "cloud": cloud_intent,
+            }
         """
     ).lstrip()
 
@@ -351,12 +515,26 @@ def backend_plugins_py() -> str:
         from pathlib import Path
         import importlib.util
         from typing import List, Dict, Any
+        import datetime
+        import json
 
         router = APIRouter(prefix="/plugins", tags=["plugins"])
 
         ROOT = Path(__file__).resolve().parent.parent
         PLUGINS_DIR = ROOT / "plugins"
         PLUGINS_DIR.mkdir(exist_ok=True)
+        ACTIVITY_LOG = ROOT / "logs" / "activity.log"
+
+
+        def log_activity(kind: str, detail: str) -> None:
+            ACTIVITY_LOG.parent.mkdir(exist_ok=True)
+            entry = {
+                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "kind": kind,
+                "detail": detail,
+            }
+            with ACTIVITY_LOG.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\\n")
 
 
         def list_plugin_files() -> List[Path]:
@@ -400,7 +578,357 @@ def backend_plugins_py() -> str:
                 return {"error": "plugin has no 'run' function"}
 
             result = module.run(payload)  # type: ignore
+            log_activity("plugin_run", f"Plugin {plugin_id} executed")
             return {"result": result}
+        """
+    ).lstrip()
+
+
+def backend_intents_py() -> str:
+    return dedent(
+        """
+        from fastapi import APIRouter, HTTPException
+        from pydantic import BaseModel
+        from typing import List, Dict, Any, Optional
+        from pathlib import Path
+        import json
+        import re
+        import string
+        import datetime
+
+        router = APIRouter(prefix="/intents", tags=["intents"])
+
+        ROOT = Path(__file__).resolve().parent.parent
+        DATA_DIR = ROOT / "data"
+        LOGS_DIR = ROOT / "logs"
+        DATA_DIR.mkdir(exist_ok=True)
+        LOGS_DIR.mkdir(exist_ok=True)
+
+        INTENTS_FILE = DATA_DIR / "intents.json"
+        ACTIVITY_LOG = LOGS_DIR / "activity.log"
+
+        STOPWORDS = {
+            "the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "at",
+            "is", "it", "this", "that", "with", "as", "be", "are", "was", "were",
+            "by", "from", "you", "me", "my", "your", "our", "we", "they", "them",
+            "i", "yo", "tu", "el", "ella", "usted", "nosotros", "vosotros",
+            "ellos", "ellas", "un", "una", "unos", "unas", "y", "o", "para",
+            "de", "en", "con", "por", "sin", "es", "son", "soy", "eres", "era",
+            "fui", "fue", "su", "sus", "mi", "mis"
+        }
+
+        INTENTS_CACHE: Optional[List[Dict[str, Any]]] = None
+
+
+        class Intent(BaseModel):
+            name: str
+            examples: List[str]
+            responses: List[str]
+
+
+        class ValidatePayload(BaseModel):
+            message: str
+
+
+        def log_activity(kind: str, detail: str) -> None:
+            ACTIVITY_LOG.parent.mkdir(exist_ok=True)
+            entry = {
+                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "kind": kind,
+                "detail": detail,
+            }
+            with ACTIVITY_LOG.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\\n")
+
+
+        def load_intents() -> List[Dict[str, Any]]:
+            global INTENTS_CACHE
+            if INTENTS_CACHE is not None:
+                return INTENTS_CACHE
+            if not INTENTS_FILE.exists():
+                INTENTS_CACHE = []
+                return INTENTS_CACHE
+            try:
+                INTENTS_CACHE = json.loads(INTENTS_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                INTENTS_CACHE = []
+            return INTENTS_CACHE
+
+
+        def save_intents(intents: List[Dict[str, Any]]) -> None:
+            global INTENTS_CACHE
+            INTENTS_FILE.write_text(json.dumps(intents, indent=2, ensure_ascii=False), encoding="utf-8")
+            INTENTS_CACHE = intents
+            log_activity("intents_saved", f"Saved {len(intents)} intents")
+
+
+        def tokenize(text: str) -> set:
+            text = text.lower()
+            text = re.sub(rf"[{re.escape(string.punctuation)}]", " ", text)
+            tokens = {t.strip() for t in text.split() if t.strip()}
+            return {t for t in tokens if t not in STOPWORDS}
+
+
+        def score_intent(message_tokens: set, intent: Dict[str, Any]) -> float:
+            example_tokens = set()
+            for ex in intent.get("examples", []):
+                example_tokens |= tokenize(ex)
+            if not example_tokens or not message_tokens:
+                return 0.0
+            overlap = message_tokens & example_tokens
+            if not overlap:
+                return 0.0
+            score = len(overlap) / len(message_tokens)
+            return score
+
+
+        def compute_intent_quality(intent: Dict[str, Any]) -> float:
+            examples = intent.get("examples", [])
+            responses = intent.get("responses", [])
+            if not examples or not responses:
+                return 0.0
+            total_length = sum(len(e.split()) for e in examples)
+            avg_len = total_length / max(len(examples), 1)
+            diversity = len({e.lower() for e in examples}) / max(len(examples), 1)
+            score = 0.5 * min(avg_len / 5.0, 1.0) + 0.5 * diversity
+            return round(score, 3)
+
+
+        def detect_conflicts(intents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            conflicts = []
+            for i in range(len(intents)):
+                for j in range(i + 1, len(intents)):
+                    a = intents[i]
+                    b = intents[j]
+                    tokens_a = set()
+                    tokens_b = set()
+                    for ex in a.get("examples", []):
+                        tokens_a |= tokenize(ex)
+                    for ex in b.get("examples", []):
+                        tokens_b |= tokenize(ex)
+                    if not tokens_a or not tokens_b:
+                        continue
+                    overlap = tokens_a & tokens_b
+                    if not overlap:
+                        continue
+                    score = len(overlap) / max(len(tokens_a), len(tokens_b))
+                    if score >= 0.7:
+                        conflicts.append({
+                            "intent_a": a.get("name"),
+                            "intent_b": b.get("name"),
+                            "overlap_score": round(score, 3),
+                            "overlapping_tokens": sorted(overlap),
+                        })
+            return conflicts
+
+
+        @router.get("/")
+        async def list_intents():
+            intents = load_intents()
+            enriched = []
+            for intent in intents:
+                q = compute_intent_quality(intent)
+                enriched.append({**intent, "quality": q})
+            conflicts = detect_conflicts(intents)
+            return {"intents": enriched, "conflicts": conflicts}
+
+
+        @router.get("/{name}")
+        async def get_intent(name: str):
+            intents = load_intents()
+            for intent in intents:
+                if intent.get("name") == name:
+                    intent = dict(intent)
+                    intent["quality"] = compute_intent_quality(intent)
+                    return intent
+            raise HTTPException(status_code=404, detail="Intent not found")
+
+
+        @router.get("/search/by-name")
+        async def search_intents(q: str):
+            q_lower = q.lower()
+            results = []
+            for intent in load_intents():
+                if q_lower in intent.get("name", "").lower():
+                    intent = dict(intent)
+                    intent["quality"] = compute_intent_quality(intent)
+                    results.append(intent)
+            return {"intents": results}
+
+
+        @router.get("/search/by-text")
+        async def search_intents_by_text(q: str):
+            q_tokens = tokenize(q)
+            if not q_tokens:
+                return {"matches": []}
+            results = []
+            for intent in load_intents():
+                score = score_intent(q_tokens, intent)
+                if score > 0:
+                    results.append({"intent": intent, "score": round(score, 3)})
+            results.sort(key=lambda x: x["score"], reverse=True)
+            for item in results:
+                item["intent"]["quality"] = compute_intent_quality(item["intent"])
+            return {"matches": results}
+
+
+        @router.post("/")
+        async def create_intent(intent: Intent):
+            intents = load_intents()
+            if any(i.get("name") == intent.name for i in intents):
+                raise HTTPException(status_code=400, detail="Intent with this name already exists")
+            intents.append(intent.dict())
+            save_intents(intents)
+            log_activity("intent_created", f"Intent created: {intent.name}")
+            return {"status": "created", "intent": intent}
+
+
+        @router.put("/{name}")
+        async def update_intent(name: str, intent: Intent):
+            intents = load_intents()
+            updated = False
+            for idx, existing in enumerate(intents):
+                if existing.get("name") == name:
+                    intents[idx] = intent.dict()
+                    updated = True
+                    break
+            if not updated:
+                raise HTTPException(status_code=404, detail="Intent not found")
+            save_intents(intents)
+            log_activity("intent_updated", f"Intent updated: {name}")
+            return {"status": "updated", "intent": intent}
+
+
+        @router.delete("/{name}")
+        async def delete_intent(name: str):
+            intents = load_intents()
+            new_intents = [i for i in intents if i.get("name") != name]
+            if len(new_intents) == len(intents):
+                raise HTTPException(status_code=404, detail="Intent not found")
+            save_intents(new_intents)
+            log_activity("intent_deleted", f"Intent deleted: {name}")
+            return {"status": "deleted", "name": name}
+
+
+        @router.post("/validate")
+        async def validate_message(payload: ValidatePayload):
+            intents = load_intents()
+            if not intents:
+                return {"intent": None, "confidence": 0.0}
+
+            msg_tokens = tokenize(payload.message)
+            if not msg_tokens:
+                return {"intent": None, "confidence": 0.0}
+
+            best_intent: Optional[Dict[str, Any]] = None
+            best_score = 0.0
+
+            for intent in intents:
+                score = score_intent(msg_tokens, intent)
+                if score > best_score:
+                    best_score = score
+                    best_intent = intent
+
+            threshold = 0.2
+            if best_intent and best_score >= threshold:
+                return {
+                    "intent": best_intent,
+                    "confidence": round(best_score, 3),
+                }
+
+            return {"intent": None, "confidence": 0.0}
+
+
+        @router.post("/reload")
+        async def reload_intents():
+            global INTENTS_CACHE
+            INTENTS_CACHE = None
+            log_activity("intents_reloaded", "Intents cache manually reloaded")
+            return {"status": "reloaded"}
+
+
+        @router.get("/quality/summary")
+        async def quality_summary():
+            intents = load_intents()
+            quality_scores = [compute_intent_quality(i) for i in intents] or [0.0]
+            avg_quality = sum(quality_scores) / len(quality_scores)
+            low_quality = [i.get("name") for i, q in zip(intents, quality_scores) if q < 0.4]
+            conflicts = detect_conflicts(intents)
+            return {
+                "avg_quality": round(avg_quality, 3),
+                "low_quality_intents": low_quality,
+                "conflicts": conflicts,
+                "total_intents": len(intents),
+            }
+        """
+    ).lstrip()
+
+
+def backend_owner_py() -> str:
+    return dedent(
+        """
+        from fastapi import APIRouter
+        from pathlib import Path
+        import json
+        import os
+
+        router = APIRouter(prefix="/owner", tags=["owner"])
+
+        ROOT = Path(__file__).resolve().parent.parent
+        LOGS_DIR = ROOT / "logs"
+        CONFIG_DIR = ROOT / "config"
+        DATA_DIR = ROOT / "data"
+        ACTIVITY_LOG = LOGS_DIR / "activity.log"
+        CHAT_LOG = LOGS_DIR / "chat.log"
+        INTENTS_FILE = DATA_DIR / "intents.json"
+
+
+        @router.get("/health-summary")
+        async def health_summary():
+            backend_ok = True
+            dashboard_ok = True  # dashboard is separate process; treat as assumption here
+            cloud_configured = bool(os.getenv("INTENTOS_CLOUD_URL") and os.getenv("INTENTOS_CLOUD_API_KEY"))
+            cloud_status = "unknown"
+
+            return {
+                "backend_running": backend_ok,
+                "dashboard_running": dashboard_ok,
+                "cloud_configured": cloud_configured,
+                "cloud_status": cloud_status,
+                "intents_file_exists": INTENTS_FILE.exists(),
+                "chat_log_exists": CHAT_LOG.exists(),
+                "activity_log_exists": ACTIVITY_LOG.exists(),
+            }
+
+
+        @router.get("/activity-log")
+        async def activity_log(limit: int = 50):
+            if not ACTIVITY_LOG.exists():
+                return {"entries": []}
+            lines = ACTIVITY_LOG.read_text(encoding="utf-8").splitlines()
+            records = []
+            for line in lines[-limit:]:
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    continue
+            return {"entries": records}
+
+
+        @router.get("/sensitive-summary")
+        async def sensitive_summary(limit: int = 100):
+            if not CHAT_LOG.exists():
+                return {"messages": []}
+            lines = CHAT_LOG.read_text(encoding="utf-8").splitlines()
+            records = []
+            for line in lines[-limit:]:
+                try:
+                    x = json.loads(line)
+                    if x.get("sensitive", {}).get("is_sensitive"):
+                        records.append(x)
+                except Exception:
+                    continue
+            return {"messages": records}
         """
     ).lstrip()
 
@@ -409,11 +937,13 @@ def backend_init_py() -> str:
     return dedent(
         """
         from .main import app
-        from . import consent, chat, plugins
+        from . import consent, chat, plugins, intents, owner
 
         app.include_router(consent.router)
         app.include_router(chat.router)
         app.include_router(plugins.router)
+        app.include_router(intents.router)
+        app.include_router(owner.router)
         """
     ).lstrip()
 
@@ -425,19 +955,27 @@ def dashboard_html() -> str:
         <html lang="en">
         <head>
             <meta charset="UTF-8" />
-            <title>Intentos Dashboard</title>
+            <title>Intentos Owner Dashboard</title>
             <style>
                 body { font-family: system-ui, sans-serif; margin: 0; padding: 0; display: flex; height: 100vh; }
-                .sidebar { width: 220px; background: #111827; color: #E5E7EB; padding: 16px; box-sizing: border-box; }
-                .content { flex: 1; padding: 16px; box-sizing: border-box; }
+                .sidebar { width: 260px; background: #111827; color: #E5E7EB; padding: 16px; box-sizing: border-box; }
+                .content { flex: 1; padding: 16px; box-sizing: border-box; overflow-y: auto; }
                 h1, h2, h3 { margin-top: 0; }
                 .section { margin-bottom: 24px; }
                 button { cursor: pointer; padding: 6px 10px; margin-top: 4px; }
-                textarea { width: 100%; height: 80px; }
-                .log-box { border: 1px solid #D1D5DB; padding: 8px; height: 160px; overflow: auto; background: #F9FAFB; }
+                textarea { width: 100%; min-height: 80px; }
+                input[type="text"] { width: 100%; }
+                .log-box { border: 1px solid #D1D5DB; padding: 8px; height: 160px; overflow: auto; background: #F9FAFB; white-space: pre-wrap; }
                 a { color: #93C5FD; text-decoration: none; }
                 table { border-collapse: collapse; width: 100%; }
                 th, td { border: 1px solid #E5E7EB; padding: 4px 6px; text-align: left; font-size: 13px; }
+                code { background: #111827; color: #E5E7EB; padding: 2px 4px; border-radius: 3px; }
+                .tag { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; }
+                .tag-sensitive { background: #FEE2E2; color: #991B1B; }
+                .tag-bad { background: #FEE2E2; color: #991B1B; }
+                .tag-ok { background: #D1FAE5; color: #065F46; }
+                .tag-warn { background: #FEF3C7; color: #92400E; }
+                .guidance-box { border: 1px solid #E5E7EB; background: #F9FAFB; padding: 8px; margin-bottom: 8px; font-size: 13px; }
             </style>
         </head>
         <body>
@@ -446,17 +984,36 @@ def dashboard_html() -> str:
                 <div class="section">
                     <h3>Navigation</h3>
                     <ul>
+                        <li><a href="#system">System Health</a></li>
                         <li><a href="#plugins">Plugins</a></li>
                         <li><a href="#chat">Chat</a></li>
                         <li><a href="#logs">Logs</a></li>
+                        <li><a href="#trace">Trace</a></li>
+                        <li><a href="#intents">Intents</a></li>
+                        <li><a href="#sensitive">Sensitive Activity</a></li>
+                        <li><a href="#owner-settings">Owner Settings</a></li>
+                        <li><a href="#activity">Activity Log</a></li>
                     </ul>
                 </div>
             </div>
             <div class="content">
-                <h1>Developer Dashboard</h1>
+                <h1>Owner / Admin Dashboard</h1>
+
+                <div class="section" id="system">
+                    <h2>System Health & Guidance</h2>
+                    <div class="guidance-box" id="systemGuidance">
+                        This section shows the overall health of your Intentos environment and recommends what to do next.
+                    </div>
+                    <div class="log-box" id="systemHealth">Loading system health...</div>
+                    <button onclick="loadSystemHealth()">Refresh Health</button>
+                </div>
 
                 <div class="section" id="plugins">
                     <h2>Plugins</h2>
+                    <div class="guidance-box">
+                        This section lists available plugins. You can use it to confirm that plugins are discovered and callable.
+                        If a plugin fails, check the activity log for details and review the plugin file under <code>plugins/</code>.
+                    </div>
                     <button onclick="loadPlugins()">Refresh Plugins</button>
                     <table>
                         <thead>
@@ -468,6 +1025,10 @@ def dashboard_html() -> str:
 
                 <div class="section" id="chat">
                     <h2>Chat Test</h2>
+                    <div class="guidance-box">
+                        Use this to test how the engine responds to text. If the wrong intent is chosen or confidence is low,
+                        adjust the examples or responses in the Intents section below.
+                    </div>
                     <textarea id="chatInput" placeholder="Type a message to the engine..."></textarea>
                     <br />
                     <button onclick="sendChat()">Send</button>
@@ -476,14 +1037,134 @@ def dashboard_html() -> str:
 
                 <div class="section" id="logs">
                     <h2>Recent Chat Log</h2>
+                    <div class="guidance-box">
+                        This shows recent messages handled by the engine. Messages flagged as sensitive are highlighted.
+                        If you see repeated low-confidence matches, consider improving or merging intents with overlapping examples.
+                    </div>
                     <div class="log-box" id="logBox">No data loaded yet.</div>
                     <button onclick="loadHistory()">Load History</button>
+                </div>
+
+                <div class="section" id="trace">
+                    <h2>Intent Trace</h2>
+                    <div class="guidance-box">
+                        Trace lets you see how the local engine and (optional) cloud engine interpret a single message.
+                        Use this to debug mismatches and decide whether to adjust local intents or your cloud endpoint.
+                    </div>
+                    <input id="traceInput" type="text" placeholder="Type a message to trace..." />
+                    <button onclick="runTrace()">Trace</button>
+                    <div class="log-box" id="traceBox">No trace yet.</div>
+                </div>
+
+                <div class="section" id="intents">
+                    <h2>Intent Management & Guidance</h2>
+                    <div class="guidance-box" id="intentGuidance">
+                        This section lets you view, search, edit, create, and delete intents.
+                        - If an intent has low quality, add more diverse examples and responses.
+                        - If two intents conflict, adjust examples to make each intent more distinct.
+                        - After large changes, use "Test Match" to confirm the engine behaves as expected.
+                    </div>
+                    <div style="display: flex; gap: 16px;">
+                        <div style="flex: 1;">
+                            <h3>Search & List</h3>
+                            <input id="intentSearch" type="text" placeholder="Search intents by name..." oninput="searchIntents()" />
+                            <button onclick="loadIntents()">Reload All</button>
+                            <table>
+                                <thead>
+                                    <tr><th>Name</th><th>Quality</th></tr>
+                                </thead>
+                                <tbody id="intentsBody"></tbody>
+                            </table>
+                            <div class="log-box" id="intentQualitySummary">Quality summary will appear here.</div>
+                        </div>
+                        <div style="flex: 2;">
+                            <h3>Edit Intent</h3>
+                            <label>Name</label>
+                            <input id="intentName" type="text" />
+                            <label>Examples (one per line)</label>
+                            <textarea id="intentExamples"></textarea>
+                            <label>Responses (one per line)</label>
+                            <textarea id="intentResponses"></textarea>
+                            <div style="margin-top: 8px;">
+                                <button onclick="saveIntent()">Save</button>
+                                <button onclick="newIntent()">New</button>
+                                <button onclick="deleteIntent()">Delete</button>
+                                <button onclick="validateIntent()">Test Match</button>
+                            </div>
+                            <div class="log-box" id="intentStatus">No intent selected.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section" id="sensitive">
+                    <h2>Sensitive Activity</h2>
+                    <div class="guidance-box">
+                        This panel shows messages that contained sensitive keywords. It does not diagnose or judge content,
+                        but it helps you see where extra care may be needed. Use this to improve responses or direct users
+                        to appropriate human or professional support.
+                    </div>
+                    <div class="log-box" id="sensitiveBox">No sensitive messages loaded.</div>
+                    <button onclick="loadSensitive()">Load Sensitive Messages</button>
+                </div>
+
+                <div class="section" id="owner-settings">
+                    <h2>Owner Settings & Guidance</h2>
+                    <div class="guidance-box">
+                        This section explains which settings are controlled by configuration files and environment variables.
+                        When something needs manual editing, follow the step-by-step instructions to update and restart services.
+                    </div>
+                    <div class="log-box" id="ownerSettingsBox">
+                        - To configure cloud intent engine, edit <code>.env</code> or your environment variables:<br/>
+                        &nbsp;&nbsp;INTENTOS_CLOUD_URL<br/>
+                        &nbsp;&nbsp;INTENTOS_CLOUD_API_KEY<br/><br/>
+                        - To adjust sensitive keyword behavior, edit the SENSITIVE_KEYWORDS set in <code>backend/chat.py</code>.<br/><br/>
+                        - To modify legal text, edit files under <code>legal/</code>.<br/><br/>
+                        After changes, restart the backend and dashboard using the CLI:<br/>
+                        <code>intentos backend</code><br/>
+                        <code>intentos dashboard</code>
+                    </div>
+                </div>
+
+                <div class="section" id="activity">
+                    <h2>Owner Activity Log</h2>
+                    <div class="guidance-box">
+                        The activity log records important owner actions, such as intent changes, consent updates, and plugin runs.
+                        Use this to understand what changed recently and to debug configuration issues.
+                    </div>
+                    <div class="log-box" id="activityBox">No activity loaded.</div>
+                    <button onclick="loadActivity()">Load Activity</button>
                 </div>
             </div>
 
             <script>
                 const BACKEND_URL = 'http://localhost:8000';
 
+                // System Health
+                async function loadSystemHealth() {
+                    const res = await fetch(BACKEND_URL + '/owner/health-summary');
+                    const data = await res.json();
+                    const box = document.getElementById('systemHealth');
+                    const guidance = document.getElementById('systemGuidance');
+
+                    box.innerText = JSON.stringify(data, null, 2);
+
+                    let msgs = [];
+                    if (!data.intents_file_exists) {
+                        msgs.push('No intents file found. The wizard should have created data/intents.json. If missing, rerun the wizard or create intents via the Intents section.');
+                    }
+                    if (!data.chat_log_exists) {
+                        msgs.push('No chat log yet. This is normal until the system has handled messages.');
+                    }
+                    if (data.cloud_configured === false) {
+                        msgs.push('Cloud engine is not configured. If you plan to use cloud intents, set INTENTOS_CLOUD_URL and INTENTOS_CLOUD_API_KEY in .env and restart the backend.');
+                    }
+                    if (!msgs.length) {
+                        msgs.push('System looks healthy. You can focus on refining intents and plugins.');
+                    }
+                    guidance.innerText = msgs.join(' ');
+                }
+
+                // Plugins
                 async function loadPlugins() {
                     const res = await fetch(BACKEND_URL + '/plugins/');
                     const data = await res.json();
@@ -496,6 +1177,7 @@ def dashboard_html() -> str:
                     });
                 }
 
+                // Chat
                 async function sendChat() {
                     const input = document.getElementById('chatInput');
                     const msg = input.value.trim();
@@ -507,22 +1189,270 @@ def dashboard_html() -> str:
                     });
                     const data = await res.json();
                     const out = document.getElementById('chatOutput');
-                    out.innerText = `Intent: ${data.intent}\\nResponse: ${data.response}`;
+                    let text = `Engine: ${data.engine}\\nIntent: ${data.intent}\\nConfidence: ${data.confidence}\\nResponse: ${data.response}`;
+                    if (data.sensitive && data.sensitive.is_sensitive) {
+                        text = 'SENSITIVE FLAGGED\\nKeywords: ' + (data.sensitive.matched_keywords || []).join(', ') + '\\n\\n' + text;
+                    }
+                    out.innerText = text;
                 }
 
+                // Logs
                 async function loadHistory() {
-                    const res = await fetch(BACKEND_URL + '/chat/history?limit=20');
+                    const res = await fetch(BACKEND_URL + '/chat/history?limit=50');
                     const data = await res.json();
                     const box = document.getElementById('logBox');
                     box.innerHTML = '';
                     (data.messages || []).forEach(m => {
                         const div = document.createElement('div');
-                        div.textContent = `[${m.ts}] (${m.intent}) ${m.message} -> ${m.reply}`;
+                        let text = `[${m.ts}] (${m.engine}/${m.intent} @ ${m.confidence}) ${m.message} -> ${m.reply}`;
+                        if (m.sensitive && m.sensitive.is_sensitive) {
+                            text = '[SENSITIVE] ' + text +
+                                   ' | keywords: ' + (m.sensitive.matched_keywords || []).join(', ');
+                            div.style.backgroundColor = '#FEE2E2';
+                        }
+                        div.textContent = text;
                         box.appendChild(div);
                     });
                 }
 
+                // Trace
+                async function runTrace() {
+                    const input = document.getElementById('traceInput');
+                    const msg = input.value.trim();
+                    if (!msg) return;
+                    const res = await fetch(BACKEND_URL + '/chat/trace?message=' + encodeURIComponent(msg));
+                    const data = await res.json();
+                    const box = document.getElementById('traceBox');
+                    box.innerText = JSON.stringify(data, null, 2);
+                }
+
+                // Intent Management
+                let currentIntentName = null;
+                let allIntentsCache = [];
+                let conflictsCache = [];
+
+                async function loadIntents() {
+                    const res = await fetch(BACKEND_URL + '/intents/');
+                    const data = await res.json();
+                    allIntentsCache = data.intents || [];
+                    conflictsCache = data.conflicts || [];
+                    renderIntentList(allIntentsCache);
+                    await loadIntentQualitySummary();
+                }
+
+                function renderIntentList(intents) {
+                    const tbody = document.getElementById('intentsBody');
+                    tbody.innerHTML = '';
+                    intents.forEach(intent => {
+                        const tr = document.createElement('tr');
+                        const name = intent.name || intent['name'];
+                        const q = intent.quality !== undefined ? intent.quality : 0;
+                        let qualityTag = `<span class="tag tag-ok">${q}</span>`;
+                        if (q < 0.4) {
+                            qualityTag = `<span class="tag tag-bad">${q}</span>`;
+                        } else if (q < 0.7) {
+                            qualityTag = `<span class="tag tag-warn">${q}</span>`;
+                        }
+                        tr.innerHTML = `<td><a href="#" onclick="selectIntent('${name}')">${name}</a></td><td>${qualityTag}</td>`;
+                        tbody.appendChild(tr);
+                    });
+                }
+
+                async function loadIntentQualitySummary() {
+                    const res = await fetch(BACKEND_URL + '/intents/quality/summary');
+                    const data = await res.json();
+                    const box = document.getElementById('intentQualitySummary');
+                    let text = '';
+                    text += `Average quality: ${data.avg_quality}\\n`;
+                    text += `Total intents: ${data.total_intents}\\n`;
+                    if (data.low_quality_intents && data.low_quality_intents.length) {
+                        text += `Low quality intents: ${data.low_quality_intents.join(', ')}\\n`;
+                    } else {
+                        text += 'No low-quality intents detected.\\n';
+                    }
+                    if (data.conflicts && data.conflicts.length) {
+                        text += '\\nConflicts detected:\\n';
+                        data.conflicts.forEach(c => {
+                            text += `- ${c.intent_a} vs ${c.intent_b} (overlap ${c.overlap_score} on ${c.overlapping_tokens.join(', ')})\\n`;
+                        });
+                    } else {
+                        text += '\\nNo strong conflicts detected between intents.\\n';
+                    }
+                    box.innerText = text;
+                }
+
+                function searchIntents() {
+                    const q = document.getElementById('intentSearch').value.toLowerCase();
+                    if (!q) {
+                        renderIntentList(allIntentsCache);
+                        return;
+                    }
+                    const filtered = allIntentsCache.filter(intent => (intent.name || '').toLowerCase().includes(q));
+                    renderIntentList(filtered);
+                }
+
+                async function selectIntent(name) {
+                    const res = await fetch(BACKEND_URL + '/intents/' + encodeURIComponent(name));
+                    if (!res.ok) {
+                        alert('Intent not found');
+                        return;
+                    }
+                    const intent = await res.json();
+                    currentIntentName = intent.name;
+                    document.getElementById('intentName').value = intent.name;
+                    document.getElementById('intentExamples').value = (intent.examples || []).join('\\n');
+                    document.getElementById('intentResponses').value = (intent.responses || []).join('\\n');
+                    const q = intent.quality !== undefined ? intent.quality : 'n/a';
+                    let msg = 'Loaded intent: ' + intent.name + ' (quality ' + q + ').';
+                    const conflicts = conflictsCache.filter(c => c.intent_a === intent.name || c.intent_b === intent.name);
+                    if (conflicts.length) {
+                        msg += '\\nConflicts with: ' + conflicts.map(c => c.intent_a === intent.name ? c.intent_b : c.intent_a).join(', ');
+                        msg += '\\nConsider making examples more distinct to reduce overlap.';
+                    }
+                    document.getElementById('intentStatus').innerText = msg;
+                }
+
+                function newIntent() {
+                    currentIntentName = null;
+                    document.getElementById('intentName').value = '';
+                    document.getElementById('intentExamples').value = '';
+                    document.getElementById('intentResponses').value = '';
+                    document.getElementById('intentStatus').innerText = 'Creating new intent. Start by giving it a clear, unique name and examples.';
+                }
+
+                async function saveIntent() {
+                    const name = document.getElementById('intentName').value.trim();
+                    const examples = document.getElementById('intentExamples').value.split('\\n').map(s => s.trim()).filter(Boolean);
+                    const responses = document.getElementById('intentResponses').value.split('\\n').map(s => s.trim()).filter(Boolean);
+
+                    if (!name) {
+                        alert('Intent name is required');
+                        return;
+                    }
+                    if (examples.length === 0) {
+                        alert('At least one example is required');
+                        return;
+                    }
+                    if (responses.length === 0) {
+                        alert('At least one response is required');
+                        return;
+                    }
+
+                    const payload = { name, examples, responses };
+
+                    let method = 'POST';
+                    let url = BACKEND_URL + '/intents/';
+                    if (currentIntentName && currentIntentName === name) {
+                        method = 'PUT';
+                        url = BACKEND_URL + '/intents/' + encodeURIComponent(name);
+                    } else if (currentIntentName && currentIntentName !== name) {
+                        await fetch(BACKEND_URL + '/intents/' + encodeURIComponent(currentIntentName), {
+                            method: 'DELETE'
+                        });
+                    }
+
+                    const res = await fetch(url, {
+                        method: method,
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        alert('Error saving intent: ' + (err.detail || res.statusText));
+                        return;
+                    }
+
+                    currentIntentName = name;
+                    document.getElementById('intentStatus').innerText =
+                        'Saved intent: ' + name + '. If matches still look weak, add more varied examples.';
+                    await loadIntents();
+                }
+
+                async function deleteIntent() {
+                    if (!currentIntentName) {
+                        alert('No intent selected.');
+                        return;
+                    }
+                    if (!confirm('Delete intent ' + currentIntentName + '? This cannot be undone.')) {
+                        return;
+                    }
+                    const res = await fetch(BACKEND_URL + '/intents/' + encodeURIComponent(currentIntentName), {
+                        method: 'DELETE'
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        alert('Error deleting intent: ' + (err.detail || res.statusText));
+                        return;
+                    }
+                    currentIntentName = null;
+                    document.getElementById('intentName').value = '';
+                    document.getElementById('intentExamples').value = '';
+                    document.getElementById('intentResponses').value = '';
+                    document.getElementById('intentStatus').innerText = 'Intent deleted. Consider re-running tests to ensure coverage for related phrases.';
+                    await loadIntents();
+                }
+
+                async function validateIntent() {
+                    const msg = prompt('Type a message to test against current intents:');
+                    if (!msg) return;
+                    const res = await fetch(BACKEND_URL + '/intents/validate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: msg })
+                    });
+                    const data = await res.json();
+                    const status = document.getElementById('intentStatus');
+                    if (!data.intent) {
+                        status.innerText =
+                            'No intent matched. Confidence: ' + data.confidence +
+                            '. Consider adding a new intent or expanding examples of existing ones.';
+                    } else {
+                        status.innerText =
+                            'Matched intent: ' + data.intent.name + ' @ ' + data.confidence +
+                            '. If this is not the intent you expected, adjust examples to make them more distinct.';
+                    }
+                }
+
+                // Sensitive Activity
+                async function loadSensitive() {
+                    const res = await fetch(BACKEND_URL + '/owner/sensitive-summary?limit=200');
+                    const data = await res.json();
+                    const box = document.getElementById('sensitiveBox');
+                    box.innerHTML = '';
+                    (data.messages || []).forEach(m => {
+                        const div = document.createElement('div');
+                        const kws = m.sensitive && m.sensitive.matched_keywords || [];
+                        let text = `[${m.ts}] ${m.message} -> ${m.reply}`;
+                        text = '[SENSITIVE] ' + text + ' | keywords: ' + kws.join(', ');
+                        div.textContent = text;
+                        box.appendChild(div);
+                    });
+                    if (!box.innerHTML) {
+                        box.innerText = 'No sensitive messages found in the recent window.';
+                    }
+                }
+
+                // Activity Log
+                async function loadActivity() {
+                    const res = await fetch(BACKEND_URL + '/owner/activity-log?limit=100');
+                    const data = await res.json();
+                    const box = document.getElementById('activityBox');
+                    box.innerHTML = '';
+                    (data.entries || []).forEach(e => {
+                        const div = document.createElement('div');
+                        div.textContent = `[${e.ts}] (${e.kind}) ${e.detail}`;
+                        box.appendChild(div);
+                    });
+                    if (!box.innerHTML) {
+                        box.innerText = 'No activity recorded yet.';
+                    }
+                }
+
+                // Initial load
+                loadSystemHealth().catch(console.error);
                 loadPlugins().catch(console.error);
+                loadIntents().catch(console.error);
             </script>
         </body>
         </html>
@@ -574,7 +1504,7 @@ def cli_main_py() -> str:
             sub = parser.add_subparsers(dest="command")
 
             sub.add_parser("backend", help="Run backend API")
-            sub.add_parser("dashboard", help="Run developer dashboard")
+            sub.add_parser("dashboard", help="Run owner dashboard")
 
             args = parser.parse_args()
 
@@ -802,7 +1732,7 @@ class IntentosWizard:
         self.force_overwrite = force_overwrite
 
     def run(self):
-        print("=== Intentos Setup Wizard ===")
+        print("=== Intentos Setup Wizard (Owner-Guided) ===")
         ensure_git_repo(ROOT)
 
         changed_paths: List[Path] = []
@@ -820,18 +1750,20 @@ class IntentosWizard:
             return
 
         self.commit_group(
-            "feat: scaffold backend",
+            "feat: scaffold backend with owner guidance",
             [
                 ROOT / "backend/__init__.py",
                 ROOT / "backend/main.py",
                 ROOT / "backend/consent.py",
                 ROOT / "backend/chat.py",
                 ROOT / "backend/plugins.py",
+                ROOT / "backend/intents.py",
+                ROOT / "backend/owner.py",
             ],
         )
 
         self.commit_group(
-            "feat: scaffold dashboard",
+            "feat: scaffold owner dashboard",
             [
                 ROOT / "dashboard/server.py",
                 ROOT / "dashboard/templates/index.html",
@@ -896,6 +1828,10 @@ class IntentosWizard:
             paths.append(base / "chat.py")
         if write_file(base / "plugins.py", backend_plugins_py(), self.dry_run, self.force_overwrite):
             paths.append(base / "plugins.py")
+        if write_file(base / "intents.py", backend_intents_py(), self.dry_run, self.force_overwrite):
+            paths.append(base / "intents.py")
+        if write_file(base / "owner.py", backend_owner_py(), self.dry_run, self.force_overwrite):
+            paths.append(base / "owner.py")
         if write_file(base / "__init__.py", backend_init_py(), self.dry_run, self.force_overwrite):
             paths.append(base / "__init__.py")
 
@@ -961,18 +1897,15 @@ class IntentosWizard:
         if write_file(ROOT / "requirements.txt", requirements_txt(), self.dry_run, self.force_overwrite):
             paths.append(ROOT / "requirements.txt")
 
-        # Ensure dirs
         for d in ["plugins", "data", "logs"]:
             p = ROOT / d
             if not self.dry_run:
                 p.mkdir(exist_ok=True)
                 print(f"[DIR] {p}")
 
-        # Sample plugin
         if write_file(ROOT / "plugins" / "sample_plugin.py", sample_plugin_py(), self.dry_run, self.force_overwrite):
             paths.append(ROOT / "plugins" / "sample_plugin.py")
 
-        # 2500-intent dataset
         intents_content = generate_intents_dataset(2500)
         if write_file(ROOT / "data" / "intents.json", intents_content, self.dry_run, self.force_overwrite):
             paths.append(ROOT / "data" / "intents.json")
@@ -985,7 +1918,7 @@ class IntentosWizard:
 # -------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Intentos Setup Wizard")
+    parser = argparse.ArgumentParser(description="Intentos Setup Wizard (Owner-Guided)")
     parser.add_argument(
         "--no-commit",
         action="store_true",
