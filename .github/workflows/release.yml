@@ -57,7 +57,7 @@ jobs:
       # ---------------------------------------------------------
       - name: Create tag
         run: |
-          git config user.name "adreinmorin-designs"
+          git config user.name "adreinmorin-design"
           git config user.email "adreinmorin@gmail.com"
           git tag ${{ steps.version.outputs.tag }}
           git push origin ${{ steps.version.outputs.tag }}
