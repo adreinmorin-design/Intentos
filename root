@@ -1,0 +1,1016 @@
+#!/usr/bin/env python
+"""
+Intentos Setup Wizard
+
+One script to scaffold the entire Intentos project:
+- Backend (FastAPI) with:
+  - Consent persistence
+  - Chat engine using a 2,500-intent dataset
+  - Optional cloud-backed intent resolution via HTTP
+  - Plugin discovery and execution
+- Dashboard (FastAPI + HTML) talking to backend
+- CLI
+- VS Code extension scaffold
+- Electron wrapper scaffold
+- Plugin system with a sample plugin
+- Dataset generation (2,500 intents)
+- Legal + config + env example
+- Git integration with structured commits (ON by default)
+
+Usage:
+    python wizard.py
+    python wizard.py --no-commit
+    python wizard.py --dry-run
+    python wizard.py --force-overwrite
+"""
+
+import argparse
+import json
+import os
+import subprocess
+from pathlib import Path
+from textwrap import dedent
+from typing import List, Optional
+
+
+# -------------------------
+# Utility helpers
+# -------------------------
+
+ROOT = Path(__file__).resolve().parent
+
+
+def run(cmd: List[str], cwd: Optional[Path] = None, check: bool = True) -> subprocess.CompletedProcess:
+    """Run a subprocess command with optional cwd."""
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        check=check,
+        text=True,
+        capture_output=True,
+    )
+
+
+def is_git_repo(path: Path) -> bool:
+    return (path / ".git").is_dir()
+
+
+def ensure_git_repo(path: Path) -> None:
+    if not is_git_repo(path):
+        print("[GIT] Initializing new git repository.")
+        run(["git", "init"], cwd=path)
+
+
+def write_file(path: Path, content: str, dry_run: bool, force: bool) -> bool:
+    """
+    Write content to path.
+    Returns True if the file was created or modified, False if skipped.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and not force:
+        existing = path.read_text(encoding="utf-8")
+        if existing == content:
+            return False
+    if dry_run:
+        print(f"[DRY-RUN] Would write: {path}")
+        return True
+    path.write_text(content, encoding="utf-8")
+    print(f"[WRITE] {path}")
+    return True
+
+
+def git_commit(
+    paths: List[Path],
+    message: str,
+    dry_run: bool,
+    no_commit: bool,
+) -> None:
+    """Stage given paths and create a commit."""
+    if dry_run or no_commit:
+        print(f"[SKIP COMMIT] {message}")
+        return
+
+    existing = [p for p in paths if p.exists()]
+    if not existing:
+        print(f"[SKIP COMMIT] No existing paths for: {message}")
+        return
+
+    rel_paths = [str(p.relative_to(ROOT)) for p in existing]
+    run(["git", "add"] + rel_paths, cwd=ROOT, check=True)
+
+    status = run(["git", "status", "--porcelain"], cwd=ROOT, check=True)
+    if not status.stdout.strip():
+        print(f"[SKIP COMMIT] No changes to commit for: {message}")
+        return
+
+    run(["git", "commit", "-m", message], cwd=ROOT, check=True)
+    print(f"[COMMIT] {message}")
+
+
+# -------------------------
+# Template generators
+# -------------------------
+
+def backend_main_py() -> str:
+    return dedent(
+        """
+        from fastapi import FastAPI
+        from fastapi.middleware.cors import CORSMiddleware
+        from pathlib import Path
+        import logging
+
+        app = FastAPI(
+            title="Intentos Backend",
+            description="Core API for intents, chat, plugins, and dashboard integration.",
+            version="0.1.0",
+        )
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        ROOT = Path(__file__).resolve().parent.parent
+        LOGS_DIR = ROOT / "logs"
+        LOGS_DIR.mkdir(exist_ok=True)
+
+        logging.basicConfig(
+            filename=LOGS_DIR / "backend.log",
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+
+
+        @app.get("/")
+        async def root():
+            return {"status": "ok", "service": "intentos-backend"}
+
+
+        @app.get("/health")
+        async def health():
+            return {"healthy": True}
+        """
+    ).lstrip()
+
+
+def backend_consent_py() -> str:
+    return dedent(
+        """
+        from pydantic import BaseModel
+        from fastapi import APIRouter
+        from pathlib import Path
+        import json
+
+        router = APIRouter(prefix="/consent", tags=["consent"])
+
+        ROOT = Path(__file__).resolve().parent.parent
+        CONFIG_DIR = ROOT / "config"
+        CONFIG_DIR.mkdir(exist_ok=True)
+        CONSENT_FILE = CONFIG_DIR / "consent.json"
+
+
+        class ConsentPayload(BaseModel):
+            allow: bool
+
+
+        def load_consent() -> dict:
+            if CONSENT_FILE.exists():
+                try:
+                    return json.loads(CONSENT_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    return {}
+            return {}
+
+
+        def save_consent(data: dict) -> None:
+            CONSENT_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+        @router.get("/")
+        async def get_consent_status():
+            data = load_consent()
+            return {"consent": data.get("allow", None)}
+
+
+        @router.post("/")
+        async def set_consent(payload: ConsentPayload):
+            data = {"allow": payload.allow}
+            save_consent(data)
+            status = "granted" if payload.allow else "denied"
+            return {"status": f"consent {status}", "consent": payload.allow}
+
+
+        @router.post("/close")
+        async def close_modal():
+            data = load_consent()
+            data["modal_closed"] = True
+            save_consent(data)
+            return {"status": "modal closed", "consent": data.get("allow", None)}
+        """
+    ).lstrip()
+
+
+def backend_chat_py() -> str:
+    return dedent(
+        """
+        from pydantic import BaseModel
+        from fastapi import APIRouter
+        from typing import Optional, List, Dict, Any
+        from pathlib import Path
+        import datetime
+        import json
+        import os
+        import httpx
+
+        router = APIRouter(prefix="/chat", tags=["chat"])
+
+        ROOT = Path(__file__).resolve().parent.parent
+        LOGS_DIR = ROOT / "logs"
+        DATA_DIR = ROOT / "data"
+        LOGS_DIR.mkdir(exist_ok=True)
+        DATA_DIR.mkdir(exist_ok=True)
+
+        CHAT_LOG = LOGS_DIR / "chat.log"
+        INTENTS_FILE = DATA_DIR / "intents.json"
+
+        CLOUD_URL = os.getenv("INTENTOS_CLOUD_URL")
+        CLOUD_API_KEY = os.getenv("INTENTOS_CLOUD_API_KEY")
+
+
+        class ChatRequest(BaseModel):
+            message: str
+            user_id: Optional[str] = None
+
+
+        def load_intents() -> List[Dict[str, Any]]:
+            if INTENTS_FILE.exists():
+                try:
+                    return json.loads(INTENTS_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    return []
+            return []
+
+
+        def append_chat_log(entry: dict) -> None:
+            line = json.dumps(entry, ensure_ascii=False)
+            with CHAT_LOG.open("a", encoding="utf-8") as f:
+                f.write(line + "\\n")
+
+
+        def match_intent_locally(message: str) -> Dict[str, Any]:
+            intents = load_intents()
+            if not intents:
+                return {
+                    "name": "fallback",
+                    "examples": [],
+                    "responses": ["I don’t have any intents configured yet."]
+                }
+            lower = message.lower()
+            for intent in intents:
+                for ex in intent.get("examples", []):
+                    if ex.lower() in lower:
+                        return intent
+            return intents[0]
+
+
+        async def call_cloud_intent_engine(message: str) -> Optional[Dict[str, Any]]:
+            if not CLOUD_URL or not CLOUD_API_KEY:
+                return None
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        CLOUD_URL,
+                        headers={
+                            "Authorization": f"Bearer {CLOUD_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json={"message": message},
+                    )
+                if resp.status_code != 200:
+                    return None
+                data = resp.json()
+                return {
+                    "name": data.get("intent", "cloud"),
+                    "responses": data.get("responses", []),
+                }
+            except Exception:
+                return None
+
+
+        @router.post("/send")
+        async def send_chat(payload: ChatRequest):
+            cloud_result = await call_cloud_intent_engine(payload.message)
+            if cloud_result and cloud_result.get("responses"):
+                responses = cloud_result["responses"]
+                reply = responses[0]
+                intent_name = cloud_result.get("name", "cloud")
+            else:
+                intent = match_intent_locally(payload.message)
+                responses = intent.get("responses", [])
+                reply = responses[0] if responses else "…"
+                intent_name = intent.get("name", "unknown")
+
+            entry = {
+                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "user_id": payload.user_id,
+                "message": payload.message,
+                "intent": intent_name,
+                "reply": reply,
+            }
+            append_chat_log(entry)
+
+            return {
+                "response": reply,
+                "intent": intent_name,
+            }
+
+
+        @router.get("/history")
+        async def get_history(limit: int = 50):
+            if not CHAT_LOG.exists():
+                return {"messages": []}
+            lines = CHAT_LOG.read_text(encoding="utf-8").splitlines()
+            records = []
+            for line in lines[-limit:]:
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    continue
+            return {"messages": records}
+        """
+    ).lstrip()
+
+
+def backend_plugins_py() -> str:
+    return dedent(
+        """
+        from fastapi import APIRouter
+        from pathlib import Path
+        import importlib.util
+        from typing import List, Dict, Any
+
+        router = APIRouter(prefix="/plugins", tags=["plugins"])
+
+        ROOT = Path(__file__).resolve().parent.parent
+        PLUGINS_DIR = ROOT / "plugins"
+        PLUGINS_DIR.mkdir(exist_ok=True)
+
+
+        def list_plugin_files() -> List[Path]:
+            return sorted(PLUGINS_DIR.glob("*.py"))
+
+
+        def load_plugin_module(path: Path):
+            spec = importlib.util.spec_from_file_location(path.stem, path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                return module
+            return None
+
+
+        @router.get("/")
+        async def list_plugins():
+            plugins: List[Dict[str, Any]] = []
+            for file in list_plugin_files():
+                module = load_plugin_module(file)
+                if not module:
+                    continue
+                name = getattr(module, "PLUGIN_NAME", file.stem)
+                description = getattr(module, "PLUGIN_DESCRIPTION", "")
+                plugins.append({
+                    "id": file.stem,
+                    "name": name,
+                    "description": description,
+                })
+            return {"plugins": plugins}
+
+
+        @router.post("/run/{plugin_id}")
+        async def run_plugin(plugin_id: str, payload: dict):
+            file = PLUGINS_DIR / f"{plugin_id}.py"
+            if not file.exists():
+                return {"error": "plugin not found"}
+
+            module = load_plugin_module(file)
+            if not module or not hasattr(module, "run"):
+                return {"error": "plugin has no 'run' function"}
+
+            result = module.run(payload)  # type: ignore
+            return {"result": result}
+        """
+    ).lstrip()
+
+
+def backend_init_py() -> str:
+    return dedent(
+        """
+        from .main import app
+        from . import consent, chat, plugins
+
+        app.include_router(consent.router)
+        app.include_router(chat.router)
+        app.include_router(plugins.router)
+        """
+    ).lstrip()
+
+
+def dashboard_html() -> str:
+    return dedent(
+        """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8" />
+            <title>Intentos Dashboard</title>
+            <style>
+                body { font-family: system-ui, sans-serif; margin: 0; padding: 0; display: flex; height: 100vh; }
+                .sidebar { width: 220px; background: #111827; color: #E5E7EB; padding: 16px; box-sizing: border-box; }
+                .content { flex: 1; padding: 16px; box-sizing: border-box; }
+                h1, h2, h3 { margin-top: 0; }
+                .section { margin-bottom: 24px; }
+                button { cursor: pointer; padding: 6px 10px; margin-top: 4px; }
+                textarea { width: 100%; height: 80px; }
+                .log-box { border: 1px solid #D1D5DB; padding: 8px; height: 160px; overflow: auto; background: #F9FAFB; }
+                a { color: #93C5FD; text-decoration: none; }
+                table { border-collapse: collapse; width: 100%; }
+                th, td { border: 1px solid #E5E7EB; padding: 4px 6px; text-align: left; font-size: 13px; }
+            </style>
+        </head>
+        <body>
+            <div class="sidebar">
+                <h2>Intentos</h2>
+                <div class="section">
+                    <h3>Navigation</h3>
+                    <ul>
+                        <li><a href="#plugins">Plugins</a></li>
+                        <li><a href="#chat">Chat</a></li>
+                        <li><a href="#logs">Logs</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="content">
+                <h1>Developer Dashboard</h1>
+
+                <div class="section" id="plugins">
+                    <h2>Plugins</h2>
+                    <button onclick="loadPlugins()">Refresh Plugins</button>
+                    <table>
+                        <thead>
+                            <tr><th>ID</th><th>Name</th><th>Description</th></tr>
+                        </thead>
+                        <tbody id="pluginsBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="section" id="chat">
+                    <h2>Chat Test</h2>
+                    <textarea id="chatInput" placeholder="Type a message to the engine..."></textarea>
+                    <br />
+                    <button onclick="sendChat()">Send</button>
+                    <div class="log-box" id="chatOutput"></div>
+                </div>
+
+                <div class="section" id="logs">
+                    <h2>Recent Chat Log</h2>
+                    <div class="log-box" id="logBox">No data loaded yet.</div>
+                    <button onclick="loadHistory()">Load History</button>
+                </div>
+            </div>
+
+            <script>
+                const BACKEND_URL = 'http://localhost:8000';
+
+                async function loadPlugins() {
+                    const res = await fetch(BACKEND_URL + '/plugins/');
+                    const data = await res.json();
+                    const tbody = document.getElementById('pluginsBody');
+                    tbody.innerHTML = '';
+                    (data.plugins || []).forEach(p => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `<td>${p.id}</td><td>${p.name}</td><td>${p.description}</td>`;
+                        tbody.appendChild(tr);
+                    });
+                }
+
+                async function sendChat() {
+                    const input = document.getElementById('chatInput');
+                    const msg = input.value.trim();
+                    if (!msg) return;
+                    const res = await fetch(BACKEND_URL + '/chat/send', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: msg })
+                    });
+                    const data = await res.json();
+                    const out = document.getElementById('chatOutput');
+                    out.innerText = `Intent: ${data.intent}\\nResponse: ${data.response}`;
+                }
+
+                async function loadHistory() {
+                    const res = await fetch(BACKEND_URL + '/chat/history?limit=20');
+                    const data = await res.json();
+                    const box = document.getElementById('logBox');
+                    box.innerHTML = '';
+                    (data.messages || []).forEach(m => {
+                        const div = document.createElement('div');
+                        div.textContent = `[${m.ts}] (${m.intent}) ${m.message} -> ${m.reply}`;
+                        box.appendChild(div);
+                    });
+                }
+
+                loadPlugins().catch(console.error);
+            </script>
+        </body>
+        </html>
+        """
+    ).lstrip()
+
+
+def dashboard_server_py() -> str:
+    return dedent(
+        """
+        from fastapi import FastAPI
+        from fastapi.responses import HTMLResponse
+        from pathlib import Path
+
+        app = FastAPI(title="Intentos Dashboard", version="0.1.0")
+
+        ROOT = Path(__file__).resolve().parent
+
+
+        @app.get("/", response_class=HTMLResponse)
+        async def index():
+            html = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+            return HTMLResponse(content=html)
+        """
+    ).lstrip()
+
+
+def cli_main_py() -> str:
+    return dedent(
+        """
+        import argparse
+        import subprocess
+        from pathlib import Path
+
+
+        ROOT = Path(__file__).resolve().parent.parent
+
+
+        def run_backend():
+            subprocess.run(["uvicorn", "backend:app", "--reload"], cwd=ROOT)
+
+
+        def run_dashboard():
+            subprocess.run(["uvicorn", "dashboard.server:app", "--reload", "--port", "8001"], cwd=ROOT)
+
+
+        def main():
+            parser = argparse.ArgumentParser(prog="intentos", description="Intentos CLI")
+            sub = parser.add_subparsers(dest="command")
+
+            sub.add_parser("backend", help="Run backend API")
+            sub.add_parser("dashboard", help="Run developer dashboard")
+
+            args = parser.parse_args()
+
+            if args.command == "backend":
+                run_backend()
+            elif args.command == "dashboard":
+                run_dashboard()
+            else:
+                parser.print_help()
+
+
+        if __name__ == "__main__":
+            main()
+        """
+    ).lstrip()
+
+
+def vscode_package_json() -> str:
+    return dedent(
+        """
+        {
+          "name": "intentos",
+          "displayName": "Intentos",
+          "description": "Intent-aware assistant integration for VS Code.",
+          "version": "0.0.1",
+          "publisher": "adreinmorin-design",
+          "engines": {
+            "vscode": "^1.75.0"
+          },
+          "categories": [
+            "Other"
+          ],
+          "activationEvents": [
+            "onStartupFinished"
+          ],
+          "main": "./out/extension.js",
+          "contributes": {
+            "commands": [
+              {
+                "command": "intentos.openDashboard",
+                "title": "Intentos: Open Dashboard"
+              }
+            ]
+          }
+        }
+        """
+    ).lstrip()
+
+
+def vscode_extension_ts() -> str:
+    return dedent(
+        """
+        import * as vscode from 'vscode';
+
+        export function activate(context: vscode.ExtensionContext) {
+            const disposable = vscode.commands.registerCommand('intentos.openDashboard', () => {
+                vscode.env.openExternal(vscode.Uri.parse('http://localhost:8001'));
+            });
+
+            context.subscriptions.push(disposable);
+        }
+
+        export function deactivate() {}
+        """
+    ).lstrip()
+
+
+def electron_main_js() -> str:
+    return dedent(
+        """
+        const { app, BrowserWindow } = require('electron');
+
+        function createWindow() {
+          const win = new BrowserWindow({
+            width: 1200,
+            height: 800,
+            webPreferences: {
+              nodeIntegration: false,
+              contextIsolation: true
+            }
+          });
+
+          win.loadURL('http://localhost:8001');
+        }
+
+        app.whenReady().then(() => {
+          createWindow();
+
+          app.on('activate', () => {
+            if (BrowserWindow.getAllWindows().length === 0) {
+              createWindow();
+            }
+          });
+        });
+
+        app.on('window-all-closed', () => {
+          if (process.platform !== 'darwin') {
+            app.quit();
+          }
+        });
+        """
+    ).lstrip()
+
+
+def legal_tos_md() -> str:
+    return dedent(
+        """
+        # Intentos Terms of Service (Draft)
+
+        This is a placeholder for the Intentos Terms of Service.
+
+        - Local-first, developer-controlled environment.
+        - Explicit consent required for any collection of user text, logs, or telemetry.
+        - No data is sent to remote services without clear, prior disclosure.
+        """
+    ).lstrip()
+
+
+def legal_privacy_md() -> str:
+    return dedent(
+        """
+        # Intentos Privacy Notice (Draft)
+
+        This is a placeholder for the Intentos Privacy Notice.
+
+        - Data stays on the user's machine by default.
+        - Any deviation from local processing must be clearly surfaced and consented to.
+        - Developers integrating Intentos must respect user autonomy and data minimization principles.
+        """
+    ).lstrip()
+
+
+def config_env_example() -> str:
+    return dedent(
+        """
+        # Intentos environment configuration example
+
+        # Optional cloud-backed intent engine endpoint
+        # INTENTOS_CLOUD_URL=https://your-cloud-engine.example.com/intents
+        # INTENTOS_CLOUD_API_KEY=your-api-key-here
+        """
+    ).lstrip()
+
+
+def config_json() -> str:
+    return json.dumps(
+        {
+            "app": {
+                "name": "Intentos",
+                "environment": "development",
+            },
+            "backend": {
+                "host": "127.0.0.1",
+                "port": 8000,
+            },
+            "dashboard": {
+                "host": "127.0.0.1",
+                "port": 8001,
+            },
+        },
+        indent=2,
+    )
+
+
+def requirements_txt() -> str:
+    return dedent(
+        """
+        fastapi
+        uvicorn[standard]
+        httpx
+        """
+    ).lstrip()
+
+
+def sample_plugin_py() -> str:
+    return dedent(
+        """
+        PLUGIN_NAME = "Sample Text Plugin"
+        PLUGIN_DESCRIPTION = "Demonstration plugin that transforms text."
+
+
+        def run(payload: dict) -> dict:
+            text = str(payload.get("text", ""))
+            return {
+                "original": text,
+                "length": len(text),
+                "upper": text.upper(),
+                "lower": text.lower(),
+                "words": text.split(),
+            }
+        """
+    ).lstrip()
+
+
+def generate_intents_dataset(num_intents: int = 2500) -> str:
+    intents = []
+    for i in range(1, num_intents + 1):
+        name = f"intent_{i:04d}"
+        examples = [
+            f"example {j} for {name}"
+            for j in range(1, 6)
+        ]
+        responses = [
+            f"This is response {k} for {name}."
+            for k in range(1, 3)
+        ]
+        intents.append(
+            {
+                "name": name,
+                "examples": examples,
+                "responses": responses,
+            }
+        )
+    return json.dumps(intents, indent=2, ensure_ascii=False)
+
+
+# -------------------------
+# Wizard
+# -------------------------
+
+class IntentosWizard:
+    def __init__(self, dry_run: bool, no_commit: bool, force_overwrite: bool):
+        self.dry_run = dry_run
+        self.no_commit = no_commit
+        self.force_overwrite = force_overwrite
+
+    def run(self):
+        print("=== Intentos Setup Wizard ===")
+        ensure_git_repo(ROOT)
+
+        changed_paths: List[Path] = []
+
+        changed_paths += self.scaffold_backend()
+        changed_paths += self.scaffold_dashboard()
+        changed_paths += self.scaffold_cli()
+        changed_paths += self.scaffold_vscode_extension()
+        changed_paths += self.scaffold_electron()
+        changed_paths += self.scaffold_legal_and_config()
+        changed_paths += self.scaffold_misc()
+
+        if not changed_paths:
+            print("No files changed; nothing to commit.")
+            return
+
+        self.commit_group(
+            "feat: scaffold backend",
+            [
+                ROOT / "backend/__init__.py",
+                ROOT / "backend/main.py",
+                ROOT / "backend/consent.py",
+                ROOT / "backend/chat.py",
+                ROOT / "backend/plugins.py",
+            ],
+        )
+
+        self.commit_group(
+            "feat: scaffold dashboard",
+            [
+                ROOT / "dashboard/server.py",
+                ROOT / "dashboard/templates/index.html",
+            ],
+        )
+
+        self.commit_group(
+            "feat: add CLI entrypoint",
+            [ROOT / "cli/main.py"],
+        )
+
+        self.commit_group(
+            "feat: scaffold VS Code extension",
+            [
+                ROOT / "vscode-extension/package.json",
+                ROOT / "vscode-extension/src/extension.ts",
+            ],
+        )
+
+        self.commit_group(
+            "feat: scaffold Electron wrapper",
+            [ROOT / "electron/main.js"],
+        )
+
+        self.commit_group(
+            "feat: add plugin system and sample plugin",
+            [ROOT / "plugins/sample_plugin.py"],
+        )
+
+        self.commit_group(
+            "feat: add 2500-intent dataset",
+            [ROOT / "data/intents.json"],
+        )
+
+        self.commit_group(
+            "chore: add legal and config",
+            [
+                ROOT / "legal/TOS.md",
+                ROOT / "legal/PRIVACY.md",
+                ROOT / "config/config.json",
+                ROOT / ".env.example",
+            ],
+        )
+
+        self.commit_group(
+            "chore: add base requirements and structure",
+            [ROOT / "requirements.txt"],
+        )
+
+    def commit_group(self, message: str, paths: List[Path]):
+        git_commit(paths=paths, message=message, dry_run=self.dry_run, no_commit=self.no_commit)
+
+    def scaffold_backend(self) -> List[Path]:
+        base = ROOT / "backend"
+        paths: List[Path] = []
+
+        if write_file(base / "main.py", backend_main_py(), self.dry_run, self.force_overwrite):
+            paths.append(base / "main.py")
+        if write_file(base / "consent.py", backend_consent_py(), self.dry_run, self.force_overwrite):
+            paths.append(base / "consent.py")
+        if write_file(base / "chat.py", backend_chat_py(), self.dry_run, self.force_overwrite):
+            paths.append(base / "chat.py")
+        if write_file(base / "plugins.py", backend_plugins_py(), self.dry_run, self.force_overwrite):
+            paths.append(base / "plugins.py")
+        if write_file(base / "__init__.py", backend_init_py(), self.dry_run, self.force_overwrite):
+            paths.append(base / "__init__.py")
+
+        return paths
+
+    def scaffold_dashboard(self) -> List[Path]:
+        base = ROOT / "dashboard"
+        paths: List[Path] = []
+
+        if write_file(base / "server.py", dashboard_server_py(), self.dry_run, self.force_overwrite):
+            paths.append(base / "server.py")
+        if write_file(base / "templates" / "index.html", dashboard_html(), self.dry_run, self.force_overwrite):
+            paths.append(base / "templates" / "index.html")
+
+        return paths
+
+    def scaffold_cli(self) -> List[Path]:
+        base = ROOT / "cli"
+        paths: List[Path] = []
+
+        if write_file(base / "main.py", cli_main_py(), self.dry_run, self.force_overwrite):
+            paths.append(base / "main.py")
+
+        return paths
+
+    def scaffold_vscode_extension(self) -> List[Path]:
+        base = ROOT / "vscode-extension"
+        paths: List[Path] = []
+
+        if write_file(base / "package.json", vscode_package_json(), self.dry_run, self.force_overwrite):
+            paths.append(base / "package.json")
+        if write_file(base / "src" / "extension.ts", vscode_extension_ts(), self.dry_run, self.force_overwrite):
+            paths.append(base / "src" / "extension.ts")
+
+        return paths
+
+    def scaffold_electron(self) -> List[Path]:
+        base = ROOT / "electron"
+        paths: List[Path] = []
+
+        if write_file(base / "main.js", electron_main_js(), self.dry_run, self.force_overwrite):
+            paths.append(base / "main.js")
+
+        return paths
+
+    def scaffold_legal_and_config(self) -> List[Path]:
+        paths: List[Path] = []
+
+        if write_file(ROOT / "legal" / "TOS.md", legal_tos_md(), self.dry_run, self.force_overwrite):
+            paths.append(ROOT / "legal" / "TOS.md")
+        if write_file(ROOT / "legal" / "PRIVACY.md", legal_privacy_md(), self.dry_run, self.force_overwrite):
+            paths.append(ROOT / "legal" / "PRIVACY.md")
+        if write_file(ROOT / "config" / "config.json", config_json(), self.dry_run, self.force_overwrite):
+            paths.append(ROOT / "config" / "config.json")
+        if write_file(ROOT / ".env.example", config_env_example(), self.dry_run, self.force_overwrite):
+            paths.append(ROOT / ".env.example")
+
+        return paths
+
+    def scaffold_misc(self) -> List[Path]:
+        paths: List[Path] = []
+
+        if write_file(ROOT / "requirements.txt", requirements_txt(), self.dry_run, self.force_overwrite):
+            paths.append(ROOT / "requirements.txt")
+
+        # Ensure dirs
+        for d in ["plugins", "data", "logs"]:
+            p = ROOT / d
+            if not self.dry_run:
+                p.mkdir(exist_ok=True)
+                print(f"[DIR] {p}")
+
+        # Sample plugin
+        if write_file(ROOT / "plugins" / "sample_plugin.py", sample_plugin_py(), self.dry_run, self.force_overwrite):
+            paths.append(ROOT / "plugins" / "sample_plugin.py")
+
+        # 2500-intent dataset
+        intents_content = generate_intents_dataset(2500)
+        if write_file(ROOT / "data" / "intents.json", intents_content, self.dry_run, self.force_overwrite):
+            paths.append(ROOT / "data" / "intents.json")
+
+        return paths
+
+
+# -------------------------
+# Entry point
+# -------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Intentos Setup Wizard")
+    parser.add_argument(
+        "--no-commit",
+        action="store_true",
+        help="Do not create git commits (still writes files unless --dry-run).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Do not write any files or commits; just print actions.",
+    )
+    parser.add_argument(
+        "--force-overwrite",
+        action="store_true",
+        help="Overwrite existing files instead of skipping unchanged ones.",
+    )
+
+    args = parser.parse_args()
+
+    wizard = IntentosWizard(
+        dry_run=args.dry_run,
+        no_commit=args.no_commit,
+        force_overwrite=args.force_overwrite,
+    )
+    wizard.run()
+
+
+if __name__ == "__main__":
+    main()
