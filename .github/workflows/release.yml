@@ -1,16 +1,78 @@
-name: Token Test
+name: IntentOS Auto Release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  test:
+  release:
     runs-on: ubuntu-latest
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.ACTIONS_PAT }}
+
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Show Repo Info
-        run: gh repo view ${{ github.repository }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Ensure requirements.txt
+        run: |
+          if [ ! -f requirements.txt ]; then
+            printf "fastapi\nuvicorn[standard]\nhttpx\npytest\n" > requirements.txt
+          fi
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine next version
+        id: version
+        run: |
+          latest=$(git tag --sort=-v:refname | head -n 1)
+          if [[ "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major=${BASH_REMATCH[1]}
+            minor=${BASH_REMATCH[2]}
+            patch=${BASH_REMATCH[3]}
+            next="v$major.$minor.$((patch+1))"
+          else
+            next="v0.1.0"
+          fi
+          echo "Next version: $next"
+          echo "tag=$next" >> $GITHUB_OUTPUT
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "adreinmorin-design"
+          git config user.email "adreinmorin@gmail.com"
+
+      - name: Create tag
+        run: |
+          git tag ${{ steps.version.outputs.tag }}
+          git push https://x-access-token:${{ secrets.ACTIONS_PAT }}@github.com/${{ github.repository }}.git ${{ steps.version.outputs.tag }}
+
+      - name: Build production
+        run: |
+          mkdir -p dist
+          cp -r app.py intents/ dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.ACTIONS_PAT }}
+
+      - name: Upload production artifact
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/app.py
+          asset_name: app.py
+          asset_content_type: text/x-python
         env:
           GITHUB_TOKEN: ${{ secrets.ACTIONS_PAT }}
