@@ -1,0 +1,35 @@
+*** Begin Patch
+*** Update File: tests/test_keyword_spotter.py
+@@
+-from gui_intentos.gui_intentos import KeywordSpotter, MicrophoneListener, IntentOSPaths
+-import tempfile
+-
+-
+-def test_keyword_spotter_unavailable_without_vosk(tmp_path):
+-    paths = IntentOSPaths(str(tmp_path))
+-    # MicrophoneListener without sounddevice will be unavailable
+-    ml = MicrophoneListener(paths)
+-    ks = KeywordSpotter(paths, ml)
+-    # If vosk not installed in the environment, ks.available should be False
+-    assert hasattr(ks, "available")
+-    assert isinstance(ks.available, bool)
+-    # start/stop should be safe
+-    assert ks.stop() is True
+-    assert ks.start() in (True, False)
++import tempfile
++from gui_intentos.gui_intentos import KeywordSpotter, MicrophoneListener, IntentOSPaths
++
++
++def test_keyword_spotter_unavailable_without_vosk():
++    with tempfile.TemporaryDirectory() as td:
++        paths = IntentOSPaths(str(td))
++        # MicrophoneListener without sounddevice will be unavailable
++        ml = MicrophoneListener(paths)
++        ks = KeywordSpotter(paths, ml)
++        # If vosk not installed in the environment, ks.available should be False
++        assert hasattr(ks, "available")
++        assert isinstance(ks.available, bool)
++        # start/stop should be safe
++        assert ks.stop() is True
++        assert ks.start() in (True, False)
+*** End Patch

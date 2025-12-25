@@ -1,0 +1,21 @@
+{
+  "name": "intentos-extension",
+  "displayName": "IntentOS Extension",
+  "description": "VS Code tools for IntentOS (scaffold)",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "activationEvents": [
+    "onCommand:intentos.helloWorld"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "intentos.helloWorld",
+        "title": "IntentOS: Hello World"
+      }
+    ]
+  },
+  "main": "./dist/extension.js"
+}

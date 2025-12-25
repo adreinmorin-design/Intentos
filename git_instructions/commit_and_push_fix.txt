@@ -1,0 +1,26 @@
+Branch name: fix/keyword-spotter-test
+Commit message: tests: make keyword spotter test self-contained (use TemporaryDirectory)
+
+Recommended commands to run locally (assuming a repo with origin remote already set):
+
+# Create a branch and switch to it
+git checkout -b fix/keyword-spotter-test
+
+# Apply the patch (from repo root)
+# (if you saved the patch at patches/fix-keyword-spotter-test.patch)
+git apply patches/fix-keyword-spotter-test.patch
+
+# Verify changes
+git status
+git add tests/test_keyword_spotter.py
+git commit -m "tests: make keyword spotter test self-contained (use TemporaryDirectory)"
+
+# Push branch and set upstream
+git push -u origin fix/keyword-spotter-test
+
+# After pushing: open a PR from fix/keyword-spotter-test -> main (or default branch)
+
+Notes:
+- If your default branch is named 'main' or 'master', create PR accordingly.
+- If you prefer to commit manually instead of applying the patch, edit the file as shown in the patch.
+- If git is not installed, install git first or run these commands on a machine with git configured.

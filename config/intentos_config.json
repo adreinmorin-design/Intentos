@@ -1,0 +1,11 @@
+{
+  "name": "IntentOS",
+  "version": "0.0.1",
+  "environment": "dev",
+  "services": {
+    "backend": {
+      "host": "127.0.0.1",
+      "port": 8000
+    }
+  }
+}

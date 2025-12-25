@@ -1,0 +1,18 @@
+{
+  "features": {
+    "cloud_intents": {
+      "description": "Send intents to cloud backends.",
+      "requires_consent": true,
+      "consent_key": "cloud_intents_enabled",
+      "default": false,
+      "enabled": false
+    },
+    "remote_logging": {
+      "description": "Send logs to a remote server.",
+      "requires_consent": true,
+      "consent_key": "remote_logging_enabled",
+      "default": false,
+      "enabled": false
+    }
+  }
+}
