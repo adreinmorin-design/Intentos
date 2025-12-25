@@ -17,5 +17,16 @@ def test_ensure_vosk_model_auto_download_bad_url_returns_false():
         # Provide an invalid URL to simulate failed download
         assert ensure_vosk_model(paths, auto_download=True, url="http://invalid.local/model.zip") is False
 
+
+def test_ensure_vosk_model_local_present_returns_true():
+    with tempfile.TemporaryDirectory() as td:
+        paths = IntentOSPaths(td)
+        dest = os.path.join(paths.misc_dir, "vosk-model-small")
+        os.makedirs(dest, exist_ok=True)
+        # Add a small placeholder file to emulate a model directory
+        with open(os.path.join(dest, "README.txt"), "w", encoding="utf-8") as f:
+            f.write("dummy model")
+        assert ensure_vosk_model(paths) is True
+
 # Note: Full download-and-extract tests would require network access and a small test artifact; for
 # unit-test safety we keep this conservative and deterministic.

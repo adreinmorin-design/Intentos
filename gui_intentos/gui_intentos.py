@@ -1836,6 +1836,35 @@ class IntentOSGUI(tk.Tk):
         except Exception as e:
             append_log(self.paths, f"Error displaying initial consent prompt: {e}")
 
+    def _install_vosk_model_ui(self) -> bool:
+        """Operator-driven install UI for a Vosk model archive.
+        Prompts for a URL, asks for explicit confirmation, then attempts a best-effort download
+        and extraction via `ensure_vosk_model(paths, auto_download=True, url=...)`.
+        Returns True on success, False otherwise. Always logs and shows user-facing dialogs on failure.
+        """
+        try:
+            url = simpledialog.askstring("Install Vosk model", "Enter URL to Vosk model archive (zip or tar.gz):")
+            if not url:
+                return False
+            confirm = messagebox.askyesno(
+                "Confirm Vosk Model Install",
+                f"Download and install model from:\n{url}?\nThis may be large and use network data.")
+            if not confirm:
+                return False
+            append_log(self.paths, f"Operator requested Vosk model install from {url}")
+            ok = ensure_vosk_model(self.paths, auto_download=True, url=url)
+            if ok:
+                messagebox.showinfo("Model Installed", "Vosk model installed successfully. Enable keyword spotting in Settings or restart the app.")
+                append_log(self.paths, "Vosk model installed successfully via UI.")
+                return True
+            else:
+                messagebox.showerror("Install Failed", "Failed to download or extract Vosk model. Check logs for details.")
+                append_log(self.paths, "Vosk model install failed via UI.")
+                return False
+        except Exception as e:
+            append_log(self.paths, f"Error during Vosk model install UI: {e}")
+            return False
+
     # ----------------------------------------------------------------------
     # STYLE
     # ----------------------------------------------------------------------
