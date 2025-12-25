@@ -1,0 +1,148 @@
+Traceback (most recent call last):
+  File "C:\Python314\Lib\shutil.py", line 701, in _rmtree_unsafe
+    os.unlink(fullname)
+    ~~~~~~~~~^^^^^^^^^^
+PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\ALBERT~1\\AppData\\Local\\Temp\\tmp93_mszzm\\misc\\backend.log'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import tests.test_backend_repair as t; t.test_attempt_backend_restart_starts_simple_server()
+                                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\test_backend_repair.py", line 36, in test_attempt_backend_restart_starts_simple_server
+    with tempfile.TemporaryDirectory() as td:
+         ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Python314\Lib\tempfile.py", line 971, in __exit__
+    self.cleanup()
+    ~~~~~~~~~~~~^^
+  File "C:\Python314\Lib\tempfile.py", line 975, in cleanup
+    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\tempfile.py", line 955, in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\shutil.py", line 852, in rmtree
+    _rmtree_impl(path, dir_fd, onexc)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\shutil.py", line 705, in _rmtree_unsafe
+    onexc(os.unlink, fullname, err)
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\tempfile.py", line 930, in onexc
+    _os.unlink(path)
+    ~~~~~~~~~~^^^^^^
+PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\ALBERT~1\\AppData\\Local\\Temp\\tmp93_mszzm\\misc\\backend.log'
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\run_all.py", line 19, in <module>
+    mod = importlib.import_module(m)
+  File "C:\Python314\Lib\importlib\__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1398, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1371, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1342, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 938, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 762, in exec_module
+  File "<frozen importlib._bootstrap>", line 491, in _call_with_frames_removed
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\test_undo.py", line 7, in <module>
+    import pytest
+ModuleNotFoundError: No module named 'pytest'
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\run_all.py", line 24, in <module>
+    getattr(mod, name)()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\test_undo.py", line 28, in test_undo_kill_process
+    ok, msg = perform_undo_action(paths, entry)
+              ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\Users\Albert Morin\Documents\Intentos\gui_intentos\gui_intentos.py", line 822, in perform_undo_action
+    subprocess.run(["taskkill", "/PID", str(pid_i), "/F"], check=False)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\subprocess.py", line 556, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\subprocess.py", line 1212, in communicate
+    self.wait()
+    ~~~~~~~~~^^
+  File "C:\Python314\Lib\subprocess.py", line 1278, in wait
+    return self._wait(timeout=timeout)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\subprocess.py", line 1604, in _wait
+    result = _winapi.WaitForSingleObject(self._handle,
+                                         timeout_millis)
+KeyboardInterrupt
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\run_all.py", line 24, in <module>
+    getattr(mod, name)()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\test_undo.py", line 28, in test_undo_kill_process
+    ok, msg = perform_undo_action(paths, entry)
+              ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\Users\Albert Morin\Documents\Intentos\gui_intentos\gui_intentos.py", line 823, in perform_undo_action
+    subprocess.run(["taskkill", "/PID", str(pid_i), "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\subprocess.py", line 556, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\subprocess.py", line 1239, in communicate
+    sts = self.wait(timeout=self._remaining_time(endtime))
+  File "C:\Python314\Lib\subprocess.py", line 1278, in wait
+    return self._wait(timeout=timeout)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\subprocess.py", line 1604, in _wait
+    result = _winapi.WaitForSingleObject(self._handle,
+                                         timeout_millis)
+KeyboardInterrupt
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\run_all.py", line 24, in <module>
+    getattr(mod, name)()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\test_undo.py", line 32, in test_undo_kill_process
+    time.sleep(0.5)
+    ~~~~~~~~~~^^^^^
+KeyboardInterrupt
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import tests.test_undo as t; t.test_undo_kill_process(); print('DONE')
+                                 ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\test_undo.py", line 32, in test_undo_kill_process
+    time.sleep(0.5)
+    ~~~~~~~~~~^^^^^
+KeyboardInterrupt
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import tests.test_undo as t; t.test_undo_kill_process(); print('DONE')
+                                 ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\test_undo.py", line 35, in test_undo_kill_process
+    time.sleep(0.5)
+    ~~~~~~~~~~^^^^^
+KeyboardInterrupt
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import tests.test_undo as t; t.test_undo_kill_process(); print('DONE')
+                                 ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Albert Morin\Documents\Intentos\tests\test_undo.py", line 36, in test_undo_kill_process
+    proc.wait(timeout=5)
+    ~~~~~~~~~^^^^^^^^^^^
+  File "C:\Python314\Lib\subprocess.py", line 1278, in wait
+    return self._wait(timeout=timeout)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\subprocess.py", line 1604, in _wait
+    result = _winapi.WaitForSingleObject(self._handle,
+                                         timeout_millis)
+KeyboardInterrupt
+

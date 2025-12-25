@@ -32,8 +32,8 @@ from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import hmac
 from dataclasses import dataclass, asdict, field
 from dataclasses import dataclass, asdict
-from typing import Optional, Dict, Any, List, Callable
-from urllib.request import urlopen
+from typing import Optional, Dict, Any, List, Callable, Tuple
+from urllib.request import urlopen, urlretrieve
 from urllib.error import URLError, HTTPError
 from datetime import datetime, timedelta
 
@@ -676,7 +676,7 @@ def check_intents_and_create_suggestions(paths: IntentOSPaths, min_examples: int
     return created
 
 
-def attempt_backend_restart(paths: IntentOSPaths, timeout: int = 10, dry_run: bool = False) -> (bool, str):
+def attempt_backend_restart(paths: IntentOSPaths, timeout: int = 10, dry_run: bool = False) -> Tuple[bool, str]:
     """Attempt to start the backend and wait until /health responds OK within timeout seconds.
     If dry_run is True, do not spawn a new process; only probe existing service.
     Returns (success: bool, report: str).
@@ -842,7 +842,7 @@ def list_undo_entries(paths: IntentOSPaths) -> list:
     return entries
 
 
-def perform_undo_action(paths: IntentOSPaths, entry: dict) -> (bool, str):
+def perform_undo_action(paths: IntentOSPaths, entry: dict) -> Tuple[bool, str]:
     """Perform an undo action described by an undo log entry.
     Returns (success, message).
     Supported actions: kill
